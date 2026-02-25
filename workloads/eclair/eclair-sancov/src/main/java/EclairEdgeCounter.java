@@ -4,19 +4,21 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
-// Counts the number of instrumentable methods in Eclair JARs.
+// Counts the total number of instrumentation probes in Eclair JARs.
 //
 // Used at Docker build time to determine TARGET_MAP_SIZE for the smite scenario
-// binary. Counts the same methods that EclairSanCov.prescan() assigns IDs to:
-// non-abstract, non-native methods in fr/acinq/eclair/ classes, which are the
-// only methods that EclairTransformer instruments.
+// binary. Counts the same probes that EclairSanCov.prescan() assigns IDs to:
+// one entry probe per non-abstract, non-native method in fr/acinq/eclair/
+// classes, plus one probe per conditional branch fall-through and one per
+// label/basic-block entry within each method.
 //
 // Usage: java -cp eclair-sancov.jar EclairEdgeCounter <jar1> [<jar2> ...]
 //
-// Prints the method count to stdout.
+// Prints the total probe count to stdout.
 public class EclairEdgeCounter {
 
   public static void main(String[] args) throws Exception {
@@ -25,7 +27,9 @@ public class EclairEdgeCounter {
       System.exit(1);
     }
 
-    int count = 0;
+    // probeCount[0] is used instead of a plain int because the anonymous
+    // ClassVisitor requires any captured variable to be effectively final.
+    int[] probeCount = {0};
 
     for (String jarPath : args) {
       if (!jarPath.endsWith(".jar")) {
@@ -43,30 +47,37 @@ public class EclairEdgeCounter {
           try (InputStream is = jar.getInputStream(je)) {
             byte[] bytecode = is.readAllBytes();
             ClassReader reader = new ClassReader(bytecode);
-            // methodCount[0] is used instead of a plain int because the
-            // anonymous ClassVisitor requires any captured variable to be
-            // effectively final.
-            int[] methodCount = {0};
             reader.accept(
                 new ClassVisitor(Opcodes.ASM9) {
                   @Override
                   public MethodVisitor visitMethod(
                       int access, String name, String descriptor,
                       String signature, String[] exceptions) {
-                    if ((access & Opcodes.ACC_ABSTRACT) == 0 &&
-                        (access & Opcodes.ACC_NATIVE) == 0) {
-                      ++methodCount[0];
+                    if ((access & Opcodes.ACC_ABSTRACT) != 0 ||
+                        (access & Opcodes.ACC_NATIVE) != 0) {
+                      return null;
                     }
-                    return null;
+                    ++probeCount[0]; // entry probe
+                    // Count body probes (conditional fall-throughs + labels).
+                    return new MethodVisitor(Opcodes.ASM9) {
+                      @Override
+                      public void visitJumpInsn(int opcode, Label label) {
+                        if (opcode != Opcodes.GOTO && opcode != Opcodes.JSR)
+                          ++probeCount[0];
+                      }
+
+                      @Override
+                      public void visitLabel(Label label) {
+                        ++probeCount[0];
+                      }
+                    };
                   }
-                  // SKIP_CODE, SKIP_DEBUG, SKIP_FRAMES tell ASM not to parse
-                  // the method bodies, debug info, or stack frames -- we only
-                  // need names and access flags for the prescan, so this is
-                  // significantly faster.
                 },
-                ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG |
-                    ClassReader.SKIP_FRAMES);
-            count += methodCount[0];
+                // SKIP_DEBUG suppresses line-number labels so only
+                // branch-target and exception-handler labels appear in
+                // visitLabel, matching the flags used in EclairTransformer and
+                // prescan().
+                ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
           }
         }
       } catch (Exception e) {
@@ -75,6 +86,6 @@ public class EclairEdgeCounter {
       }
     }
 
-    System.out.println(count);
+    System.out.println(probeCount[0]);
   }
 }

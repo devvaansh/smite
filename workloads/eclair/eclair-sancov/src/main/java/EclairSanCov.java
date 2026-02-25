@@ -15,14 +15,18 @@ import java.util.jar.JarFile;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
 // Java agent that provides AFL coverage feedback for Eclair.
 //
 // When loaded via -javaagent:eclair-sancov.jar, this agent maps the AFL shared
-// memory region and instruments Eclair's classes to record method-level
-// coverage.
+// memory region and instruments Eclair's classes to record basic-block-level
+// coverage. Each instrumented method receives:
+//   - One probe at method entry
+//   - One probe after each conditional jump (fall-through arc)
+//   - One probe at each label / basic-block entry (taken arc)
 //
 // Edge IDs are pre-assigned by scanning all Eclair JARs on the classpath before
 // any class is loaded, sorted by class name then declaration order within each
@@ -57,17 +61,19 @@ public class EclairSanCov {
   // by the nyx-agent before spawning Eclair). Implemented in shmutil.c via JNI.
   private static native ByteBuffer mapShm(int shmId);
 
-  // Records coverage for an instrumented edge. Called from every instrumented
-  // method entry. edgeId is a pre-assigned sequential integer always in
+  // Records coverage for an instrumented probe. Called from every instrumented
+  // coverage point. edgeId is a pre-assigned sequential integer always in
   // [0, AFL_MAP_SIZE).
   public static void edge(int edgeId) {
     shmBuffer.put(edgeId, (byte)(shmBuffer.get(edgeId) + 1));
   }
 
-  // Scans all Eclair JARs on the classpath and assigns sequential edge IDs to
-  // every non-abstract, non-native method in fr/acinq/eclair/ classes. Classes
-  // are processed in sorted order by internal name; methods within each class
-  // are processed in declaration order (as visited by ASM). This gives
+  // Scans all Eclair JARs on the classpath and assigns sequential probe IDs to
+  // every non-abstract, non-native method in fr/acinq/eclair/ classes. Each
+  // method receives one ID for its entry probe plus one ID per body probe
+  // (conditional fall-throughs and label/basic-block entries). Classes are
+  // processed in sorted order by internal name; methods and their instructions
+  // are processed in declaration/bytecode order (as visited by ASM). This gives
   // deterministic IDs independent of class loading order at runtime.
   static Map<String, Integer> prescan() {
     // Collect the set of JAR files to scan. java.class.path contains the
@@ -133,31 +139,45 @@ public class EclairSanCov {
             public MethodVisitor visitMethod(
                 int access, String name, String descriptor, String signature,
                 String[] exceptions) {
+              if ((access & Opcodes.ACC_ABSTRACT) != 0 ||
+                  (access & Opcodes.ACC_NATIVE) != 0) {
+                return null;
+              }
               // We include the descriptor in the key because overloaded methods
               // share the same name. The descriptor encodes the parameter and
               // return types (e.g. "(I)V" = takes int, returns void), making it
               // unique per overload.
-              if ((access & Opcodes.ACC_ABSTRACT) == 0 &&
-                  (access & Opcodes.ACC_NATIVE) == 0) {
-                String key = className + "#" + name + "#" + descriptor;
-                ids.put(key, counter[0]++);
-              }
-              return null;
+              String key = className + "#" + name + "#" + descriptor;
+              ids.put(key, counter[0]++); // entry probe ID
+              // Count body probes to reserve their IDs after the entry probe:
+              // one per conditional fall-through, one per label/basic-block
+              // entry.
+              return new MethodVisitor(Opcodes.ASM9) {
+                @Override
+                public void visitJumpInsn(int opcode, Label label) {
+                  if (opcode != Opcodes.GOTO && opcode != Opcodes.JSR)
+                    ++counter[0]; // fall-through arc probe
+                }
+
+                @Override
+                public void visitLabel(Label label) {
+                  ++counter[0]; // basic block entry probe
+                }
+              };
             }
-            // SKIP_CODE, SKIP_DEBUG, SKIP_FRAMES tell ASM not to parse the
-            // method bodies, debug info, or stack frames -- we only need names
-            // and access flags for the prescan, so this is significantly
-            // faster.
           },
-          ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG |
-              ClassReader.SKIP_FRAMES);
+          // SKIP_DEBUG suppresses line-number labels so only branch-target and
+          // exception-handler labels appear in visitLabel, matching the flags
+          // used in EclairTransformer.
+          ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
     }
 
     return ids;
   }
 
-  // ASM ClassFileTransformer that inserts a call to edge() at the entry point
-  // of every non-abstract, non-native method in Eclair classes.
+  // ASM ClassFileTransformer that instruments every non-abstract, non-native
+  // method in Eclair classes with edge() probes at the method entry, each
+  // conditional branch fall-through, and each basic-block entry label.
   static class EclairTransformer implements ClassFileTransformer {
 
     private static final String ECLAIR_PREFIX = "fr/acinq/eclair/";
@@ -172,12 +192,22 @@ public class EclairSanCov {
         return null; // null = no transformation
       }
 
-      ClassReader reader = new ClassReader(classfileBuffer);
-      // COMPUTE_FRAMES tells ASM to recompute stack map frames from scratch
-      // after transformation (inserting an INVOKESTATIC changes stack depth).
-      ClassWriter writer = new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
-      reader.accept(new EclairClassVisitor(writer, className), 0);
-      return writer.toByteArray();
+      try {
+        ClassReader reader = new ClassReader(classfileBuffer);
+        // COMPUTE_FRAMES tells ASM to recompute stack map frames from scratch
+        // after transformation (inserting INVOKESTATIC probes changes stack
+        // depth). SKIP_DEBUG | SKIP_FRAMES must match the prescan() flags so
+        // both passes see the same label set and probe counts agree.
+        ClassWriter writer =
+            new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES);
+        reader.accept(new EclairClassVisitor(writer, className),
+                      ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        return writer.toByteArray();
+      } catch (Throwable e) {
+        System.err.println("eclair-sancov: transform failed for " + className +
+                           ": " + e);
+        return null;
+      }
     }
   }
 
@@ -217,25 +247,58 @@ public class EclairSanCov {
     }
   }
 
+  // Instruments a single method with edge() probes at:
+  //   - Method entry
+  //   - After each conditional jump (fall-through arc)
+  //   - After each label (basic-block entry: covers all taken arcs, loop
+  //     headers, switch cases, exception handlers, and merge points)
+  //
+  // Probe IDs are allocated starting at edgeId (entry) then edgeId+1,
+  // edgeId+2, ... for body probes in instruction-visit order. prescan() uses
+  // the same visit order and flags to reserve the correct number of IDs per
+  // method, guaranteeing stable, non-overlapping IDs across restarts.
   static class EclairMethodVisitor extends MethodVisitor {
 
-    private final int edgeId;
+    private int currentProbeId;
 
     EclairMethodVisitor(MethodVisitor mv, int edgeId) {
       super(Opcodes.ASM9, mv);
-      this.edgeId = edgeId;
+      currentProbeId = edgeId;
+    }
+
+    // Emits: ldc probeId; invokestatic EclairSanCov.edge(I)V
+    private void emitProbe() {
+      super.visitLdcInsn(currentProbeId++);
+      super.visitMethodInsn(Opcodes.INVOKESTATIC, "EclairSanCov", "edge",
+                            "(I)V", false);
     }
 
     @Override
     public void visitCode() {
-      // visitCode() opens the Code attribute and must be called first. Probe
-      // instructions inserted after it appear at the top of the method body,
-      // before any original bytecode.
+      // visitCode() opens the Code attribute and must be called first. The
+      // probe inserted after it fires at method entry.
       super.visitCode();
-      // Push edgeId constant and call EclairSanCov.edge(int).
-      super.visitLdcInsn(edgeId);
-      super.visitMethodInsn(Opcodes.INVOKESTATIC, "EclairSanCov", "edge",
-                            "(I)V", false);
+      emitProbe();
+    }
+
+    // Probe inserted AFTER the jump so it fires only on the fall-through arc.
+    // The taken arc is covered by the visitLabel probe at the jump's target.
+    // Unconditional GOTO and JSR do not produce fall-through probes.
+    @Override
+    public void visitJumpInsn(int opcode, Label label) {
+      super.visitJumpInsn(opcode, label);
+      if (opcode != Opcodes.GOTO && opcode != Opcodes.JSR)
+        emitProbe();
+    }
+
+    // Probe inserted AFTER the label so it fires whenever any jump reaches
+    // this basic-block entry. With SKIP_DEBUG, only branch-target and
+    // exception-handler labels appear here (not line-number markers), so
+    // every probe corresponds to a real control-flow edge.
+    @Override
+    public void visitLabel(Label label) {
+      super.visitLabel(label);
+      emitProbe();
     }
   }
 }
