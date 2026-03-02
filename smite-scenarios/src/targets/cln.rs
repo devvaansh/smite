@@ -328,10 +328,10 @@ impl Target for ClnTarget {
         // local mode, the crash handler writes crash data to this file.
         let crash_log = std::path::Path::new("/tmp/smite-crash.log");
         if crash_log.exists() {
-            if let Ok(msg) = std::fs::read_to_string(crash_log) {
+            if let Ok(msg) = fs::read_to_string(crash_log) {
                 log::error!("crash handler: {}", msg.trim());
             }
-            let _ = std::fs::remove_file(crash_log);
+            let _ = fs::remove_file(crash_log);
             return Err(TargetError::Crashed);
         }
 
