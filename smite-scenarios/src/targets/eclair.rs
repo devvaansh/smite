@@ -210,7 +210,11 @@ impl EclairTarget {
         Self::write_config(config, &eclair_dir)?;
 
         let mut cmd = Command::new("eclair-node.sh");
-        cmd.arg(format!("-Declair.datadir={}", eclair_dir.display()))
+        // Skip java_version_check() in eclair-node.sh. It runs `java -version`,
+        // which inherits our crash handler wrapper and could trigger a false
+        // crash report on exit().
+        cmd.arg("-no-version-check")
+            .arg(format!("-Declair.datadir={}", eclair_dir.display()))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
@@ -320,6 +324,17 @@ impl Target for EclairTarget {
     }
 
     fn check_alive(&mut self) -> Result<(), TargetError> {
+        // Check if the crash handler was triggered. In Nyx mode, crashes are
+        // reported directly via hypercall and we never get to this point. In
+        // local mode, the crash handler writes crash data to this file.
+        let crash_log = std::path::Path::new("/tmp/smite-crash.log");
+        if crash_log.exists() {
+            if let Ok(msg) = fs::read_to_string(crash_log) {
+                log::error!("crash handler: {}", msg.trim());
+            }
+            let _ = fs::remove_file(crash_log);
+            return Err(TargetError::Crashed);
+        }
         if !self.eclair.is_running() {
             return Err(TargetError::Crashed);
         }

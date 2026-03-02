@@ -69,6 +69,15 @@ COPY smite-nyx-sys/ smite-nyx-sys/
 RUN TARGET_MAP_SIZE=$(cat /tmp/eclair-edge-count.txt) \
     cargo build -p smite-scenarios --bin eclair --release --features nyx
 
+# Build JVM crash handler shared libraries, LD_PRELOADed into the JVM to
+# report crashes before atexit handlers close TCP sockets. Two variants:
+#   nyx-jvm-crash-handler.so - reports crashes via Nyx hypercalls
+#   jvm-crash-handler.so     - writes /tmp/smite-crash.log for local mode
+RUN cc -shared -fPIC -DENABLE_NYX -DNO_PT_NYX \
+    smite-nyx-sys/src/jvm-crash-handler.c -o /nyx-jvm-crash-handler.so && \
+    cc -shared -fPIC \
+    smite-nyx-sys/src/jvm-crash-handler.c -o /jvm-crash-handler.so
+
 # Runtime image.
 FROM eclipse-temurin:21-jre
 
@@ -88,8 +97,21 @@ COPY --from=builder /usr/local/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
 COPY --from=builder /eclair-sancov/target/eclair-sancov-0.0.0.jar /eclair-sancov.jar
 COPY --from=builder /usr/local/lib/libeclair-sancov.so /usr/local/lib/libeclair-sancov.so
 
-# Copy the eclair scenario binary
+# Copy crash handlers and eclair scenario binary
+COPY --from=builder /nyx-jvm-crash-handler.so /jvm-crash-handler.so /
 COPY --from=builder /smite/target/release/eclair /eclair-scenario
+
+# Default to the local crash handler; init.sh overrides with the Nyx version.
+ENV SMITE_CRASH_HANDLER=/jvm-crash-handler.so
+
+# Install a java wrapper that LD_PRELOADs the crash handler on the JVM only.
+# eclair-node.sh runs shell commands (ls, grep, awk) that would inherit
+# LD_PRELOAD and trigger false crash reports when they exit(0). The wrapper
+# ensures only the JVM process gets the crash handler.
+RUN mv "$JAVA_HOME/bin/java" "$JAVA_HOME/bin/java.real" && \
+    printf '#!/bin/sh\nLD_PRELOAD=$SMITE_CRASH_HANDLER exec %s/bin/java.real "$@"\n' \
+        "$JAVA_HOME" > "$JAVA_HOME/bin/java" && \
+    chmod +x "$JAVA_HOME/bin/java"
 
 # Copy init script
 COPY workloads/eclair/init.sh /init.sh
