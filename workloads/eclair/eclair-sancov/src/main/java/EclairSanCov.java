@@ -2,7 +2,7 @@ import java.io.File;
 import java.io.InputStream;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
-import java.nio.ByteBuffer;
+import java.lang.reflect.Field; // for Unsafe.theUnsafe access
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Enumeration;
@@ -18,6 +18,7 @@ import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import sun.misc.Unsafe;
 
 // Java agent that provides AFL coverage feedback for Eclair.
 //
@@ -48,8 +49,22 @@ public class EclairSanCov {
   // hierarchies without Class.forName().
   static Map<String, String> superclassMap = null;
 
-  // Direct ByteBuffer pointing at the AFL shared memory region.
-  static volatile ByteBuffer shmBuffer = null;
+  // Unsafe instance for direct memory access to the AFL shared memory region.
+  // Using Unsafe.getByte/putByte avoids the bounds check and address field load
+  // that DirectByteBuffer.get/put perform on every call.
+  private static final Unsafe UNSAFE;
+  static {
+    try {
+      Field f = Unsafe.class.getDeclaredField("theUnsafe");
+      f.setAccessible(true);
+      UNSAFE = (Unsafe)f.get(null);
+    } catch (Exception e) {
+      throw new RuntimeException("eclair-sancov: failed to get Unsafe", e);
+    }
+  }
+
+  // Base address of the AFL shared memory region, obtained via JNI shmat().
+  static long shmAddr;
 
   // Java agent entry point, called by the JVM before main().
   public static void premain(String args, Instrumentation inst) {
@@ -61,21 +76,24 @@ public class EclairSanCov {
     edgeIds = prescan();
 
     System.loadLibrary("eclair-sancov");
-    shmBuffer = mapShm(Integer.parseInt(shmIdStr));
+    shmAddr = mapShmAddr(Integer.parseInt(shmIdStr));
+    if (shmAddr == 0) {
+      throw new RuntimeException("eclair-sancov: mapShmAddr returned null");
+    }
 
     inst.addTransformer(new EclairTransformer());
   }
 
-  // Maps the AFL shared memory segment via shmat and wraps it as a direct
-  // ByteBuffer. The buffer capacity equals AFL_MAP_SIZE (set in the environment
-  // by the nyx-agent before spawning Eclair). Implemented in shmutil.c via JNI.
-  private static native ByteBuffer mapShm(int shmId);
+  // Maps the AFL shared memory segment via shmat and returns the raw pointer
+  // as a long. Implemented in shmutil.c via JNI.
+  private static native long mapShmAddr(int shmId);
 
   // Records coverage for an instrumented probe. Called from every instrumented
   // coverage point. edgeId is a pre-assigned sequential integer always in
   // [0, AFL_MAP_SIZE).
   public static void edge(int edgeId) {
-    shmBuffer.put(edgeId, (byte)(shmBuffer.get(edgeId) + 1));
+    long addr = shmAddr + edgeId;
+    UNSAFE.putByte(addr, (byte)(UNSAFE.getByte(addr) + 1));
   }
 
   // Package prefixes to instrument. A class is instrumented if its internal
