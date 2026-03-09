@@ -92,7 +92,7 @@ impl EclairTarget {
             .arg("-addresstype=bech32")
             .arg("-changetype=bech32")
             .arg(format!(
-                "-zmqpubrawblock=tcp://127.0.0.1:{}",
+                "-zmqpubhashblock=tcp://127.0.0.1:{}",
                 config.zmq_block_port
             ))
             .arg(format!(
