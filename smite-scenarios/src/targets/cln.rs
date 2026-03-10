@@ -18,7 +18,7 @@ use serde::Deserialize;
 use smite::process::ManagedProcess;
 
 use super::bitcoind;
-use super::{Target, TargetError};
+use super::{Target, TargetError, check_crash_log};
 
 /// Configuration for the CLN target.
 pub struct ClnConfig {
@@ -228,23 +228,10 @@ impl Target for ClnTarget {
     }
 
     fn check_alive(&mut self) -> Result<(), TargetError> {
-        // Check if the crash handler was triggered. In Nyx mode, crashes are
-        // reported directly via hypercall and we never get to this point. In
-        // local mode, the crash handler writes crash data to this file.
-        let crash_log = std::path::Path::new("/tmp/smite-crash.log");
-        if crash_log.exists() {
-            if let Ok(msg) = fs::read_to_string(crash_log) {
-                log::error!("crash handler: {}", msg.trim());
-            }
-            let _ = fs::remove_file(crash_log);
-            return Err(TargetError::Crashed);
-        }
-
-        // Check whether lightningd is running.
+        check_crash_log()?;
         if !self.cln.is_running() {
             return Err(TargetError::Crashed);
         }
-
         Ok(())
     }
 }
