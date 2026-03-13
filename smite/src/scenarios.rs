@@ -36,6 +36,22 @@ pub fn smite_run<S: Scenario>() -> std::process::ExitCode {
 
     simple_logger::init_with_env().expect("Failed to initialize logger");
 
+    // Install a panic hook so that panics in the scenario itself (e.g., failed
+    // expect() calls) are reported as crashes rather than silent timeouts.
+    #[cfg(feature = "nyx")]
+    if std::env::var("SMITE_NYX").is_ok() {
+        std::panic::set_hook(Box::new(|info| {
+            let message = info.to_string();
+            let c_message = std::ffi::CString::new(message).unwrap_or_default();
+            // SAFETY: nyx_fail expects a null-terminated C string. We use
+            // CString to ensure null-termination. The pointer is valid for the
+            // duration of the call.
+            unsafe {
+                smite_nyx_sys::nyx_fail(c_message.as_ptr());
+            }
+        }));
+    }
+
     // Initialize the runner before the scenario. This is important when
     // using Nyx to ensure nyx_init is called before spawning targets.
     let runner = StdRunner::new();
