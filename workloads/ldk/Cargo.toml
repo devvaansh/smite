@@ -3,6 +3,11 @@ name = "ldk-node-wrapper"
 version = "0.0.0"
 edition = "2024"
 
+[profile.release]
+# Skip stack unwinding on panics so that the crash handler has time to report
+# the crash before the snapshot gets reset.
+panic = "abort"
+
 [dependencies]
 ldk-node = "0.7"
 libc = "0.2"

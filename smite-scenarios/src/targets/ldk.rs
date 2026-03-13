@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use smite::process::ManagedProcess;
 
 use super::bitcoind;
-use super::{Target, TargetError};
+use super::{Target, TargetError, check_crash_log};
 
 /// Configuration for the LDK target.
 pub struct LdkConfig {
@@ -77,6 +77,12 @@ impl LdkTarget {
             .arg(bitcoind::INITIAL_BLOCKS.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+
+        // LD_PRELOAD the crash handler to report crashes immediately (before
+        // process teardown closes TCP sockets).
+        if let Ok(handler) = std::env::var("SMITE_CRASH_HANDLER") {
+            cmd.env("LD_PRELOAD", handler);
+        }
 
         let mut ldk = ManagedProcess::spawn(&mut cmd, "ldk-node-wrapper")?;
 
@@ -144,8 +150,7 @@ impl Target for LdkTarget {
     }
 
     fn check_alive(&mut self) -> Result<(), TargetError> {
-        // No coverage sync needed - Rust writes directly to AFL shm.
-        // Just check that the process is still running.
+        check_crash_log()?;
         if !self.ldk.is_running() {
             return Err(TargetError::Crashed);
         }

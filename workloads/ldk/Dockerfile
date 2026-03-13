@@ -61,6 +61,15 @@ COPY smite-nyx-sys/ smite-nyx-sys/
 RUN TARGET_PATH=/ldk-wrapper/target/release/ldk-node-wrapper \
     cargo build -p smite-scenarios --bin ldk --release --features nyx
 
+# Build crash handler shared libraries, LD_PRELOADed into ldk-node-wrapper to
+# report crashes immediately (before process teardown closes TCP sockets).
+#   nyx-crash-handler.so  - reports crashes via Nyx hypercalls
+#   crash-handler.so      - calls _exit(1), for local reproduction
+RUN clang-${LLVM_V} -fPIC -DENABLE_NYX -DNO_PT_NYX -D_GNU_SOURCE \
+    smite-nyx-sys/src/nyx-crash-handler.c -ldl -shared -o /nyx-crash-handler.so && \
+    clang-${LLVM_V} -fPIC -D_GNU_SOURCE \
+    smite-nyx-sys/src/nyx-crash-handler.c -ldl -shared -o /crash-handler.so
+
 # Runtime image
 FROM debian:bookworm-slim
 
@@ -70,8 +79,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgcc-s1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy ldk-node-wrapper binary
+# Copy ldk-node-wrapper binary and crash handlers
 COPY --from=builder /ldk-wrapper/target/release/ldk-node-wrapper /usr/local/bin/ldk-node-wrapper
+COPY --from=builder /nyx-crash-handler.so /crash-handler.so /
 
 # Copy Bitcoin Core binaries
 COPY --from=builder /usr/local/bin/bitcoind /usr/local/bin/bitcoind
@@ -79,6 +89,9 @@ COPY --from=builder /usr/local/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
 
 # Copy the ldk-scenario binary
 COPY --from=builder /smite/target/release/ldk /ldk-scenario
+
+# Default to the local crash handler; init.sh overrides with the Nyx version.
+ENV SMITE_CRASH_HANDLER=/crash-handler.so
 
 # Copy the init script
 COPY workloads/ldk/init.sh /init.sh
