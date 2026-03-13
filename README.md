@@ -18,26 +18,17 @@ Smite is a coverage-guided fuzzing framework for Lightning Network implementatio
 
 ## Quick Start
 
-Choose a target (LND, LDK, CLN, or Eclair) and follow the steps below:
+Choose a target (`lnd`, `ldk`, `cln`, or `eclair`) and a scenario (`encrypted_bytes` or `noise`) and follow the steps below:
 
 ```bash
-# Build the Docker image (SCENARIO selects which scenario binary to include)
-docker build -t smite-lnd -f workloads/lnd/Dockerfile --build-arg SCENARIO=encrypted_bytes .
-docker build -t smite-ldk -f workloads/ldk/Dockerfile --build-arg SCENARIO=encrypted_bytes .
-docker build -t smite-cln -f workloads/cln/Dockerfile --build-arg SCENARIO=encrypted_bytes .
-docker build -t smite-eclair -f workloads/eclair/Dockerfile --build-arg SCENARIO=encrypted_bytes .
-
-# Other scenarios use the same Dockerfile with a different SCENARIO
-docker build -t smite-lnd-noise -f workloads/lnd/Dockerfile --build-arg SCENARIO=noise .
+# Build the Docker image
+docker build -t smite-<target>-<scenario> -f workloads/<target>/Dockerfile --build-arg SCENARIO=<scenario> .
 
 # Enable the KVM VMware backdoor (required for Nyx)
 ./scripts/enable-vmware-backdoor.sh
 
 # Create the Nyx sharedir
-./scripts/setup-nyx.sh /tmp/smite-nyx smite-lnd ~/AFLplusplus  # for LND
-./scripts/setup-nyx.sh /tmp/smite-nyx smite-ldk ~/AFLplusplus  # for LDK
-./scripts/setup-nyx.sh /tmp/smite-nyx smite-cln ~/AFLplusplus  # for CLN
-./scripts/setup-nyx.sh /tmp/smite-nyx smite-eclair ~/AFLplusplus  # for Eclair
+./scripts/setup-nyx.sh /tmp/smite-nyx smite-<target>-<scenario> ~/AFLplusplus
 
 # Create seed corpus
 mkdir -p /tmp/smite-seeds
@@ -73,10 +64,7 @@ When AFL++ finds a crash:
 cp /tmp/smite-out/default/crashes/<crashing-input> ./crash
 
 # Reproduce in local mode (use the matching image and scenario binary)
-docker run --rm -v $PWD/crash:/input.bin -e SMITE_INPUT=/input.bin smite-lnd /lnd-scenario
-docker run --rm -v $PWD/crash:/input.bin -e SMITE_INPUT=/input.bin smite-ldk /ldk-scenario
-docker run --rm -v $PWD/crash:/input.bin -e SMITE_INPUT=/input.bin smite-cln /cln-scenario
-docker run --rm -v $PWD/crash:/input.bin -e SMITE_INPUT=/input.bin smite-eclair /eclair-scenario
+docker run --rm -v $PWD/crash:/input.bin -e SMITE_INPUT=/input.bin smite-<target>-<scenario> /<target>-scenario
 ```
 
 ### Coverage Report Mode
