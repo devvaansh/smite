@@ -1,8 +1,8 @@
 //! Scenario implementations and helpers.
 
-mod raw_bytes;
+mod encrypted_bytes;
 
-pub use raw_bytes::RawBytesScenario;
+pub use encrypted_bytes::EncryptedBytesScenario;
 
 use std::time::Duration;
 

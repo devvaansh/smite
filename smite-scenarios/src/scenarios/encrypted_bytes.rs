@@ -13,12 +13,12 @@ use crate::targets::Target;
 /// This is the simplest fuzzing scenario - it takes arbitrary bytes and sends
 /// them over an encrypted Lightning connection. This can find parsing bugs or
 /// crashes from malformed messages.
-pub struct RawBytesScenario<T: Target> {
+pub struct EncryptedBytesScenario<T: Target> {
     target: T,
     conn: NoiseConnection,
 }
 
-impl<T: Target> Scenario for RawBytesScenario<T> {
+impl<T: Target> Scenario for EncryptedBytesScenario<T> {
     fn new(_args: &[String]) -> Result<Self, String> {
         let config = T::Config::default();
         let target = T::start(config).map_err(|e| e.to_string())?;
