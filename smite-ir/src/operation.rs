@@ -1,5 +1,8 @@
 //! IR operations.
 
+use std::fmt;
+use std::fmt::Write;
+
 use serde::{Deserialize, Serialize};
 
 use super::VariableType;
@@ -97,6 +100,12 @@ pub enum AcceptChannelField {
     ChannelType,
 }
 
+impl fmt::Display for AcceptChannelField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 impl AcceptChannelField {
     /// Returns the variable type produced by extracting this field.
     #[must_use]
@@ -117,6 +126,47 @@ impl AcceptChannelField {
             | Self::FirstPerCommitmentPoint => VariableType::Point,
             Self::UpfrontShutdownScript => VariableType::Bytes,
             Self::ChannelType => VariableType::Features,
+        }
+    }
+}
+
+/// Format a byte slice as a hex string. Returns an empty string for empty
+/// input.
+fn format_hex(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let mut s = String::with_capacity(2 + bytes.len() * 2);
+    s.push_str("0x");
+    for b in bytes {
+        write!(s, "{b:02x}").expect("write to string");
+    }
+    s
+}
+
+/// Print an Operation. Operations that take no variable inputs include parens
+/// (e.g., `LoadAmount(100000)`, `RecvAcceptChannel()`). Operations that do take
+/// inputs omit parens so `Program::Display` can append them `(v0, v1, ...)`.
+impl fmt::Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LoadAmount(v) => write!(f, "LoadAmount({v})"),
+            Self::LoadFeeratePerKw(v) => write!(f, "LoadFeeratePerKw({v})"),
+            Self::LoadBlockHeight(v) => write!(f, "LoadBlockHeight({v})"),
+            Self::LoadU16(v) => write!(f, "LoadU16({v})"),
+            Self::LoadU8(v) => write!(f, "LoadU8({v})"),
+            Self::LoadBytes(b) => write!(f, "LoadBytes({})", format_hex(b)),
+            Self::LoadFeatures(b) => write!(f, "LoadFeatures({})", format_hex(b)),
+            Self::LoadPrivateKey(b) => write!(f, "LoadPrivateKey({})", format_hex(b)),
+            Self::LoadChannelId(b) => write!(f, "LoadChannelId({})", format_hex(b)),
+            Self::LoadTargetPubkeyFromContext => write!(f, "LoadTargetPubkeyFromContext()"),
+            Self::LoadChainHashFromContext => write!(f, "LoadChainHashFromContext()"),
+            Self::RecvAcceptChannel => write!(f, "RecvAcceptChannel()"),
+            // Operations with inputs: parens added by Program::Display.
+            Self::DerivePoint => write!(f, "DerivePoint"),
+            Self::ExtractAcceptChannel(field) => write!(f, "Extract{field}"),
+            Self::BuildOpenChannel => write!(f, "BuildOpenChannel"),
+            Self::SendMessage => write!(f, "SendMessage"),
         }
     }
 }

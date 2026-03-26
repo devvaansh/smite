@@ -16,3 +16,6 @@ pub use instruction::Instruction;
 pub use operation::Operation;
 pub use program::Program;
 pub use variable::{Variable, VariableType};
+
+#[cfg(test)]
+mod tests;
