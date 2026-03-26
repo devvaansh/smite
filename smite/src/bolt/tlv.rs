@@ -4,7 +4,8 @@
 //! See BOLT 1 for the specification.
 
 use super::BoltError;
-use super::types::{decode_bigsize, encode_bigsize};
+use super::types::BigSize;
+use super::wire::WireFormat;
 
 /// A single TLV record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,8 +79,8 @@ impl TlvStream {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for record in &self.records {
-            out.extend(encode_bigsize(record.tlv_type));
-            out.extend(encode_bigsize(record.value.len() as u64));
+            BigSize::new(record.tlv_type).write(&mut out);
+            BigSize::new(record.value.len() as u64).write(&mut out);
             out.extend(&record.value);
         }
         out
@@ -104,13 +105,12 @@ impl TlvStream {
     /// Returns an error if the stream is malformed or contains unknown even types.
     pub fn decode_with_known(data: &[u8], known_even: &[u64]) -> Result<Self, BoltError> {
         let mut stream = Self::new();
-        let mut pos = 0;
+        let mut cursor: &[u8] = data;
         let mut last_type: Option<u64> = None;
 
-        while pos < data.len() {
+        while !cursor.is_empty() {
             // Decode type
-            let (tlv_type, type_len) = decode_bigsize(&data[pos..])?;
-            pos += type_len;
+            let tlv_type = BigSize::read(&mut cursor)?.value();
 
             // Check strictly increasing order
             if let Some(prev) = last_type
@@ -124,12 +124,11 @@ impl TlvStream {
             last_type = Some(tlv_type);
 
             // Decode length
-            let (length, length_len) = decode_bigsize(&data[pos..])?;
-            pos += length_len;
+            let length = BigSize::read(&mut cursor)?.value();
 
             // Check we have enough bytes for value
             let length = usize::try_from(length).map_err(|_| BoltError::TlvLengthOverflow)?;
-            if pos + length > data.len() {
+            if length > cursor.len() {
                 return Err(BoltError::TlvLengthOverflow);
             }
 
@@ -140,12 +139,10 @@ impl TlvStream {
             }
 
             // Store the record
-            stream.records.push(TlvRecord {
-                tlv_type,
-                value: data[pos..pos + length].to_vec(),
-            });
+            let value = cursor[..length].to_vec();
+            cursor = &cursor[length..];
 
-            pos += length;
+            stream.records.push(TlvRecord { tlv_type, value });
         }
 
         Ok(stream)

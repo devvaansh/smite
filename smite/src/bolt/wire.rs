@@ -1,7 +1,7 @@
 //! Wire format serialization and deserialization primitives.
 
 use crate::bolt::BoltError;
-use crate::bolt::types::{CHANNEL_ID_SIZE, ChannelId};
+use crate::bolt::types::{BigSize, CHANNEL_ID_SIZE, ChannelId};
 use secp256k1::PublicKey;
 
 /// A type that can be read from and written to the Lightning wire format.
@@ -78,6 +78,67 @@ impl WireFormat for ChannelId {
 
     fn write(&self, out: &mut Vec<u8>) {
         self.as_bytes().write(out);
+    }
+}
+
+impl WireFormat for BigSize {
+    /// Reads a `BigSize` value from the byte slice, advancing past the consumed bytes.
+    ///
+    /// `BigSize` is like Bitcoin's `CompactSize` but big-endian:
+    /// - 0x00-0xFC: 1 byte (value as-is)
+    /// - 0xFD + 2 bytes BE: values 0xFD-0xFFFF
+    /// - 0xFE + 4 bytes BE: values 0x10000-0xFFFFFFFF
+    /// - 0xFF + 8 bytes BE: values > 0xFFFFFFFF
+    ///
+    /// # Errors
+    ///
+    /// Returns `BigSizeTruncated` if there aren't enough bytes, or
+    /// `BigSizeNotMinimal` if the encoding is not minimal.
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        let prefix = u8::read(data).map_err(|_| BoltError::BigSizeTruncated)?;
+
+        match prefix {
+            0..=0xfc => Ok(BigSize::new(u64::from(prefix))),
+            0xfd => {
+                let value = u64::from(u16::read(data).map_err(|_| BoltError::BigSizeTruncated)?);
+                if value < 0xfd {
+                    return Err(BoltError::BigSizeNotMinimal);
+                }
+                Ok(BigSize::new(value))
+            }
+            0xfe => {
+                let value = u64::from(u32::read(data).map_err(|_| BoltError::BigSizeTruncated)?);
+                if value < 0x1_0000 {
+                    return Err(BoltError::BigSizeNotMinimal);
+                }
+                Ok(BigSize::new(value))
+            }
+            0xff => {
+                let value = u64::read(data).map_err(|_| BoltError::BigSizeTruncated)?;
+                if value < 0x1_0000_0000 {
+                    return Err(BoltError::BigSizeNotMinimal);
+                }
+                Ok(BigSize::new(value))
+            }
+        }
+    }
+
+    /// Writes a `BigSize` value in wire format, appending bytes to `out`.
+    #[allow(clippy::cast_possible_truncation)] // Truncation is safe: we check ranges before casting
+    fn write(&self, out: &mut Vec<u8>) {
+        let value = self.value();
+        if value < 0xfd {
+            (value as u8).write(out);
+        } else if value < 0x1_0000 {
+            0xfdu8.write(out);
+            (value as u16).write(out);
+        } else if value < 0x1_0000_0000 {
+            0xfeu8.write(out);
+            (value as u32).write(out);
+        } else {
+            0xffu8.write(out);
+            value.write(out);
+        }
     }
 }
 
@@ -362,5 +423,175 @@ mod tests {
         let id = ChannelId::read(&mut data).unwrap();
         assert_eq!(id, ChannelId::new([0x11; CHANNEL_ID_SIZE]));
         assert_eq!(data.len(), 8); // 8 bytes remaining
+    }
+
+    // Test vectors from BOLT 1 Appendix A
+    // https://github.com/lightning/bolts/blob/master/01-messaging.md#appendix-a-bigsize-test-vectors
+
+    #[test]
+    fn bigsize_read_valid() {
+        let tests: &[(&[u8], u64)] = &[
+            (&[0x00], 0),
+            (&[0xfc], 252),
+            (&[0xfd, 0x00, 0xfd], 253),
+            (&[0xfd, 0xff, 0xff], 65535),
+            (&[0xfe, 0x00, 0x01, 0x00, 0x00], 65536),
+            (&[0xfe, 0xff, 0xff, 0xff, 0xff], 4_294_967_295),
+            (
+                &[0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00],
+                4_294_967_296,
+            ),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+                18_446_744_073_709_551_615,
+            ),
+        ];
+
+        for (bytes, expected) in tests {
+            let mut cursor: &[u8] = bytes;
+            let bs = BigSize::read(&mut cursor).expect("valid bigsize");
+            assert_eq!(bs.value(), *expected, "decoding {bytes:02x?}");
+            assert_eq!(bs.len(), bytes.len());
+            assert!(cursor.is_empty());
+        }
+    }
+
+    #[test]
+    fn bigsize_write_valid() {
+        let tests: &[(u64, &[u8])] = &[
+            (0, &[0x00]),
+            (252, &[0xfc]),
+            (253, &[0xfd, 0x00, 0xfd]),
+            (65535, &[0xfd, 0xff, 0xff]),
+            (65536, &[0xfe, 0x00, 0x01, 0x00, 0x00]),
+            (4_294_967_295, &[0xfe, 0xff, 0xff, 0xff, 0xff]),
+            (
+                4_294_967_296,
+                &[0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                18_446_744_073_709_551_615,
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ),
+        ];
+
+        for (value, expected) in tests {
+            let mut encoded = Vec::new();
+            BigSize::new(*value).write(&mut encoded);
+            assert_eq!(encoded.as_slice(), *expected, "encoding {value}");
+        }
+    }
+
+    #[test]
+    fn bigsize_write_roundtrip() {
+        let values = [
+            0u64,
+            1,
+            252,
+            253,
+            254,
+            65535,
+            65536,
+            0xffff_ffff,
+            0x1_0000_0000,
+            u64::MAX,
+        ];
+        for value in values {
+            let bs = BigSize(value);
+            let mut encoded = Vec::new();
+            bs.write(&mut encoded);
+
+            let mut cursor: &[u8] = &encoded;
+            let decoded = BigSize::read(&mut cursor).expect("valid bigsize");
+            assert_eq!(value, decoded.value());
+            assert_eq!(bs.len(), encoded.len());
+            assert!(cursor.is_empty());
+        }
+    }
+
+    #[test]
+    fn bigsize_read_not_minimal() {
+        // Two-byte encoding for value < 253
+        let mut invalid: &[u8] = &[0xfd, 0x00, 0xfc];
+        assert_eq!(
+            BigSize::read(&mut invalid),
+            Err(BoltError::BigSizeNotMinimal)
+        );
+
+        // Four-byte encoding for value < 65536
+        let mut invalid: &[u8] = &[0xfe, 0x00, 0x00, 0xff, 0xff];
+        assert_eq!(
+            BigSize::read(&mut invalid),
+            Err(BoltError::BigSizeNotMinimal)
+        );
+
+        // Eight-byte encoding for value < 4294967296
+        let mut invalid: &[u8] = &[0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(
+            BigSize::read(&mut invalid),
+            Err(BoltError::BigSizeNotMinimal)
+        );
+    }
+
+    #[test]
+    fn bigsize_read_truncated() {
+        // Test vectors from BOLT 1 Appendix A "short read" and "no read"
+
+        // No read tests (just prefix, no payload bytes)
+        assert_eq!(
+            BigSize::read(&mut &[][..]),
+            Err(BoltError::BigSizeTruncated)
+        ); // one byte no read
+        assert_eq!(
+            BigSize::read(&mut &[0xfd][..]),
+            Err(BoltError::BigSizeTruncated)
+        ); // two byte no read
+        assert_eq!(
+            BigSize::read(&mut &[0xfe][..]),
+            Err(BoltError::BigSizeTruncated)
+        ); // four byte no read
+        assert_eq!(
+            BigSize::read(&mut &[0xff][..]),
+            Err(BoltError::BigSizeTruncated)
+        ); // eight byte no read
+
+        // Short read tests (prefix + partial payload)
+        assert_eq!(
+            BigSize::read(&mut &[0xfd, 0x00][..]),
+            Err(BoltError::BigSizeTruncated)
+        ); // two byte short read
+        assert_eq!(
+            BigSize::read(&mut &[0xfe, 0xff, 0xff][..]),
+            Err(BoltError::BigSizeTruncated)
+        ); // four byte short read
+        assert_eq!(
+            BigSize::read(&mut &[0xff, 0xff, 0xff, 0xff, 0xff][..]),
+            Err(BoltError::BigSizeTruncated)
+        ); // eight byte short read
+    }
+
+    #[test]
+    fn bigsize_len_matches_encode() {
+        let values = [0, 252, 253, 65535, 65536, 0xffff_ffff, 0x1_0000_0000];
+        for value in values {
+            let mut encoded = Vec::new();
+            BigSize::new(value).write(&mut encoded);
+            assert_eq!(BigSize::new(value).len(), encoded.len());
+        }
+    }
+
+    #[test]
+    fn bigsize_read_advances_cursor() {
+        // Single-byte BigSize followed by extra bytes
+        let mut data: &[u8] = &[0x05, 0xff, 0xff];
+        let bs = BigSize::read(&mut data).unwrap();
+        assert_eq!(bs, BigSize::new(5));
+        assert_eq!(data, &[0xff, 0xff]);
+
+        // Two-byte BigSize followed by extra bytes
+        let mut data: &[u8] = &[0xfd, 0x00, 0xfd, 0xaa];
+        let bs = BigSize::read(&mut data).unwrap();
+        assert_eq!(bs, BigSize::new(253));
+        assert_eq!(data, &[0xaa]);
     }
 }

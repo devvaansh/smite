@@ -23,9 +23,7 @@ pub use ping::Ping;
 pub use pong::Pong;
 pub use shutdown::Shutdown;
 pub use tlv::{TlvRecord, TlvStream};
-pub use types::{
-    CHANNEL_ID_SIZE, ChannelId, MAX_MESSAGE_SIZE, bigsize_len, decode_bigsize, encode_bigsize,
-};
+pub use types::{BigSize, CHANNEL_ID_SIZE, ChannelId, MAX_MESSAGE_SIZE};
 pub use warning::Warning;
 pub use wire::WireFormat;
 
