@@ -1,5 +1,7 @@
 //! Fundamental types for BOLT message encoding.
 
+use secp256k1::hashes::{self, sha256d};
+
 /// Maximum Lightning message size (2-byte length prefix limit).
 pub const MAX_MESSAGE_SIZE: usize = 65535;
 
@@ -8,6 +10,12 @@ pub const CHANNEL_ID_SIZE: usize = 32;
 
 /// Size of a chain hash (SHA256).
 pub const CHAIN_HASH_SIZE: usize = 32;
+
+/// Size of a transaction ID in bytes.
+pub const TXID_SIZE: usize = 32;
+
+/// Size of a compact ECDSA signature in bytes.
+pub const COMPACT_SIGNATURE_SIZE: usize = 64;
 
 /// A 32-byte channel identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,6 +71,11 @@ impl BigSize {
             9
         }
     }
+}
+
+hashes::hash_newtype! {
+    /// A bitcoin transaction hash/transaction ID.
+    pub struct Txid(sha256d::Hash);
 }
 
 #[cfg(test)]
