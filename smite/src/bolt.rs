@@ -5,6 +5,7 @@
 
 mod accept_channel;
 mod accept_channel2;
+mod attribution_data;
 mod channel_ready;
 mod error;
 mod funding_created;
@@ -24,12 +25,15 @@ mod tx_init_rbf;
 mod tx_remove_input;
 mod tx_remove_output;
 mod types;
+mod update_fail_htlc;
 mod update_fail_malformed_htlc;
+mod update_fulfill_htlc;
 mod warning;
 mod wire;
 
 pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
 pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
+pub use attribution_data::{AttributionData, TruncatedHmac};
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
 pub use error::Error;
 pub use funding_created::FundingCreated;
@@ -52,7 +56,9 @@ pub use types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, PUBLIC_KEY_SIZE,
     SHA256_HASH_SIZE, TXID_SIZE, Txid,
 };
+pub use update_fail_htlc::{UpdateFailHtlc, UpdateFailHtlcTlvs};
 pub use update_fail_malformed_htlc::UpdateFailMalformedHtlc;
+pub use update_fulfill_htlc::{UpdateFulfillHtlc, UpdateFulfillHtlcTlvs};
 pub use warning::Warning;
 pub use wire::WireFormat;
 
@@ -133,6 +139,10 @@ pub mod msg_type {
     pub const TX_ACK_RBF: u16 = 73;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
+    /// `update_fulfill_htlc` message (BOLT 2).
+    pub const UPDATE_FULFILL_HTLC: u16 = 130;
+    /// `update_fail_htlc` message (BOLT 2).
+    pub const UPDATE_FAIL_HTLC: u16 = 131;
     /// `update_fail_malformed_htlc` message (BOLT 2).
     pub const UPDATE_FAIL_MALFORMED_HTLC: u16 = 135;
     /// Gossip timestamp filter message (BOLT 7).
@@ -181,6 +191,10 @@ pub enum Message {
     TxAckRbf(TxAckRbf),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
+    /// `update_fulfill_htlc` message (type 130).
+    UpdateFulfillHtlc(UpdateFulfillHtlc),
+    /// `update_fail_htlc` message (type 131).
+    UpdateFailHtlc(UpdateFailHtlc),
     /// `update_fail_malformed_htlc` message (type 135).
     UpdateFailMalformedHtlc(UpdateFailMalformedHtlc),
     /// Gossip timestamp filter message (type 265).
@@ -221,6 +235,8 @@ impl Message {
             Self::TxInitRbf(_) => msg_type::TX_INIT_RBF,
             Self::TxAckRbf(_) => msg_type::TX_ACK_RBF,
             Self::TxAbort(_) => msg_type::TX_ABORT,
+            Self::UpdateFulfillHtlc(_) => msg_type::UPDATE_FULFILL_HTLC,
+            Self::UpdateFailHtlc(_) => msg_type::UPDATE_FAIL_HTLC,
             Self::UpdateFailMalformedHtlc(_) => msg_type::UPDATE_FAIL_MALFORMED_HTLC,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
@@ -252,6 +268,8 @@ impl Message {
             Self::TxInitRbf(m) => out.extend(m.encode()),
             Self::TxAckRbf(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
+            Self::UpdateFulfillHtlc(m) => out.extend(m.encode()),
+            Self::UpdateFailHtlc(m) => out.extend(m.encode()),
             Self::UpdateFailMalformedHtlc(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
@@ -290,6 +308,10 @@ impl Message {
             msg_type::TX_INIT_RBF => Ok(Self::TxInitRbf(TxInitRbf::decode(cursor)?)),
             msg_type::TX_ACK_RBF => Ok(Self::TxAckRbf(TxAckRbf::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
+            msg_type::UPDATE_FULFILL_HTLC => {
+                Ok(Self::UpdateFulfillHtlc(UpdateFulfillHtlc::decode(cursor)?))
+            }
+            msg_type::UPDATE_FAIL_HTLC => Ok(Self::UpdateFailHtlc(UpdateFailHtlc::decode(cursor)?)),
             msg_type::UPDATE_FAIL_MALFORMED_HTLC => Ok(Self::UpdateFailMalformedHtlc(
                 UpdateFailMalformedHtlc::decode(cursor)?,
             )),
@@ -679,6 +701,32 @@ mod tests {
     }
 
     #[test]
+    fn message_update_fulfill_htlc_roundtrip() {
+        let msg = UpdateFulfillHtlc {
+            channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
+            id: 42,
+            payment_preimage: [0xcd; 32],
+            tlvs: UpdateFulfillHtlcTlvs::default(),
+        };
+        let encoded = Message::UpdateFulfillHtlc(msg.clone()).encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::UpdateFulfillHtlc(msg));
+    }
+
+    #[test]
+    fn message_update_fail_htlc_roundtrip() {
+        let msg = UpdateFailHtlc {
+            channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
+            id: 7,
+            reason: vec![0xde, 0xad, 0xbe, 0xef],
+            tlvs: UpdateFailHtlcTlvs::default(),
+        };
+        let encoded = Message::UpdateFailHtlc(msg.clone()).encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::UpdateFailHtlc(msg));
+    }
+
+    #[test]
     fn message_update_fail_malformed_htlc_roundtrip() {
         let msg = UpdateFailMalformedHtlc {
             channel_id: ChannelId::new([0x42; CHANNEL_ID_SIZE]),
@@ -802,6 +850,26 @@ mod tests {
         assert_eq!(
             Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
             msg_type::TX_ABORT
+        );
+        assert_eq!(
+            Message::UpdateFulfillHtlc(UpdateFulfillHtlc {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                id: 0,
+                payment_preimage: [0; 32],
+                tlvs: UpdateFulfillHtlcTlvs::default(),
+            })
+            .msg_type(),
+            msg_type::UPDATE_FULFILL_HTLC
+        );
+        assert_eq!(
+            Message::UpdateFailHtlc(UpdateFailHtlc {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                id: 0,
+                reason: vec![],
+                tlvs: UpdateFailHtlcTlvs::default(),
+            })
+            .msg_type(),
+            msg_type::UPDATE_FAIL_HTLC
         );
         assert_eq!(
             Message::UpdateFailMalformedHtlc(UpdateFailMalformedHtlc {
