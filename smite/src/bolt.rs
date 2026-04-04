@@ -21,6 +21,8 @@ mod tx_complete;
 mod tx_remove_input;
 mod tx_remove_output;
 mod types;
+mod update_fail_htlc;
+mod update_fulfill_htlc;
 mod warning;
 mod wire;
 
@@ -45,6 +47,8 @@ pub use types::{
     BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE, PUBLIC_KEY_SIZE,
     TXID_SIZE, Txid,
 };
+pub use update_fail_htlc::{AttributionData, TruncatedHmac, UpdateFailHtlc, UpdateFailHtlcTlvs};
+pub use update_fulfill_htlc::{UpdateFulfillHtlc, UpdateFulfillHtlcTlvs};
 pub use warning::Warning;
 pub use wire::WireFormat;
 
@@ -119,6 +123,10 @@ pub mod msg_type {
     pub const TX_COMPLETE: u16 = 70;
     /// `tx_abort` message (BOLT 2).
     pub const TX_ABORT: u16 = 74;
+    /// `update_fulfill_htlc` message (BOLT 2).
+    pub const UPDATE_FULFILL_HTLC: u16 = 130;
+    /// `update_fail_htlc` message (BOLT 2).
+    pub const UPDATE_FAIL_HTLC: u16 = 131;
     /// Gossip timestamp filter message (BOLT 7).
     pub const GOSSIP_TIMESTAMP_FILTER: u16 = 265;
 }
@@ -159,6 +167,10 @@ pub enum Message {
     TxComplete(TxComplete),
     /// `tx_abort` message (type 74).
     TxAbort(TxAbort),
+    /// `update_fulfill_htlc` message (type 130).
+    UpdateFulfillHtlc(UpdateFulfillHtlc),
+    /// `update_fail_htlc` message (type 131).
+    UpdateFailHtlc(UpdateFailHtlc),
     /// Gossip timestamp filter message (type 265).
     GossipTimestampFilter(GossipTimestampFilter),
     /// Unknown message type.
@@ -194,6 +206,8 @@ impl Message {
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
             Self::TxAbort(_) => msg_type::TX_ABORT,
+            Self::UpdateFulfillHtlc(_) => msg_type::UPDATE_FULFILL_HTLC,
+            Self::UpdateFailHtlc(_) => msg_type::UPDATE_FAIL_HTLC,
             Self::GossipTimestampFilter(_) => msg_type::GOSSIP_TIMESTAMP_FILTER,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
@@ -221,6 +235,8 @@ impl Message {
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
             Self::TxAbort(m) => out.extend(m.encode()),
+            Self::UpdateFulfillHtlc(m) => out.extend(m.encode()),
+            Self::UpdateFailHtlc(m) => out.extend(m.encode()),
             Self::GossipTimestampFilter(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
@@ -255,6 +271,10 @@ impl Message {
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
             msg_type::TX_ABORT => Ok(Self::TxAbort(TxAbort::decode(cursor)?)),
+            msg_type::UPDATE_FULFILL_HTLC => {
+                Ok(Self::UpdateFulfillHtlc(UpdateFulfillHtlc::decode(cursor)?))
+            }
+            msg_type::UPDATE_FAIL_HTLC => Ok(Self::UpdateFailHtlc(UpdateFailHtlc::decode(cursor)?)),
             msg_type::GOSSIP_TIMESTAMP_FILTER => Ok(Self::GossipTimestampFilter(
                 GossipTimestampFilter::decode(cursor)?,
             )),
@@ -572,6 +592,32 @@ mod tests {
     }
 
     #[test]
+    fn message_update_fulfill_htlc_roundtrip() {
+        let msg = UpdateFulfillHtlc {
+            channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
+            id: 42,
+            payment_preimage: [0xcd; 32],
+            tlvs: UpdateFulfillHtlcTlvs::default(),
+        };
+        let encoded = Message::UpdateFulfillHtlc(msg.clone()).encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::UpdateFulfillHtlc(msg));
+    }
+
+    #[test]
+    fn message_update_fail_htlc_roundtrip() {
+        let msg = UpdateFailHtlc {
+            channel_id: ChannelId::new([0xab; CHANNEL_ID_SIZE]),
+            id: 7,
+            reason: vec![0xde, 0xad, 0xbe, 0xef],
+            tlvs: UpdateFailHtlcTlvs::default(),
+        };
+        let encoded = Message::UpdateFailHtlc(msg.clone()).encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::UpdateFailHtlc(msg));
+    }
+
+    #[test]
     fn message_gossip_timestamp_filter_roundtrip() {
         let chain_hash = [0x6f; 32];
         let filter = GossipTimestampFilter::new(chain_hash, 1_000_000, 86400);
@@ -659,6 +705,26 @@ mod tests {
         assert_eq!(
             Message::TxAbort(TxAbort::new(ChannelId::new([0; CHANNEL_ID_SIZE]), "")).msg_type(),
             msg_type::TX_ABORT
+        );
+        assert_eq!(
+            Message::UpdateFulfillHtlc(UpdateFulfillHtlc {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                id: 0,
+                payment_preimage: [0; 32],
+                tlvs: UpdateFulfillHtlcTlvs::default(),
+            })
+            .msg_type(),
+            msg_type::UPDATE_FULFILL_HTLC
+        );
+        assert_eq!(
+            Message::UpdateFailHtlc(UpdateFailHtlc {
+                channel_id: ChannelId::new([0; CHANNEL_ID_SIZE]),
+                id: 0,
+                reason: vec![],
+                tlvs: UpdateFailHtlcTlvs::default(),
+            })
+            .msg_type(),
+            msg_type::UPDATE_FAIL_HTLC
         );
         assert_eq!(
             Message::GossipTimestampFilter(GossipTimestampFilter::no_gossip([0u8; 32])).msg_type(),
