@@ -4,6 +4,7 @@
 //! protocol messages as specified in the BOLT specifications.
 
 mod accept_channel;
+mod accept_channel2;
 mod channel_ready;
 mod error;
 mod funding_created;
@@ -25,6 +26,7 @@ mod warning;
 mod wire;
 
 pub use accept_channel::{AcceptChannel, AcceptChannelTlvs};
+pub use accept_channel2::{AcceptChannel2, AcceptChannel2Tlvs};
 pub use channel_ready::{ChannelReady, ChannelReadyTlvs};
 pub use error::Error;
 pub use funding_created::FundingCreated;
@@ -127,6 +129,8 @@ pub mod msg_type {
     pub const SHUTDOWN: u16 = 38;
     /// `open_channel2` message (BOLT 2).
     pub const OPEN_CHANNEL2: u16 = 64;
+    /// `accept_channel2` message (BOLT 2).
+    pub const ACCEPT_CHANNEL2: u16 = 65;
     /// `tx_remove_input` message (BOLT 2).
     pub const TX_REMOVE_INPUT: u16 = 68;
     /// `tx_remove_output` message (BOLT 2).
@@ -167,6 +171,8 @@ pub enum Message {
     Shutdown(Shutdown),
     /// `open_channel2` message (type 64).
     OpenChannel2(OpenChannel2),
+    /// `accept_channel2` message (type 65).
+    AcceptChannel2(AcceptChannel2),
     /// `tx_remove_input` message (type 68).
     TxRemoveInput(TxRemoveInput),
     /// `tx_remove_output` message (type 69).
@@ -206,6 +212,7 @@ impl Message {
             Self::ChannelReady(_) => msg_type::CHANNEL_READY,
             Self::Shutdown(_) => msg_type::SHUTDOWN,
             Self::OpenChannel2(_) => msg_type::OPEN_CHANNEL2,
+            Self::AcceptChannel2(_) => msg_type::ACCEPT_CHANNEL2,
             Self::TxRemoveInput(_) => msg_type::TX_REMOVE_INPUT,
             Self::TxRemoveOutput(_) => msg_type::TX_REMOVE_OUTPUT,
             Self::TxComplete(_) => msg_type::TX_COMPLETE,
@@ -233,6 +240,7 @@ impl Message {
             Self::ChannelReady(m) => out.extend(m.encode()),
             Self::Shutdown(m) => out.extend(m.encode()),
             Self::OpenChannel2(m) => out.extend(m.encode()),
+            Self::AcceptChannel2(m) => out.extend(m.encode()),
             Self::TxRemoveInput(m) => out.extend(m.encode()),
             Self::TxRemoveOutput(m) => out.extend(m.encode()),
             Self::TxComplete(m) => out.extend(m.encode()),
@@ -267,6 +275,7 @@ impl Message {
             msg_type::CHANNEL_READY => Ok(Self::ChannelReady(ChannelReady::decode(cursor)?)),
             msg_type::SHUTDOWN => Ok(Self::Shutdown(Shutdown::decode(cursor)?)),
             msg_type::OPEN_CHANNEL2 => Ok(Self::OpenChannel2(OpenChannel2::decode(cursor)?)),
+            msg_type::ACCEPT_CHANNEL2 => Ok(Self::AcceptChannel2(AcceptChannel2::decode(cursor)?)),
             msg_type::TX_REMOVE_INPUT => Ok(Self::TxRemoveInput(TxRemoveInput::decode(cursor)?)),
             msg_type::TX_REMOVE_OUTPUT => Ok(Self::TxRemoveOutput(TxRemoveOutput::decode(cursor)?)),
             msg_type::TX_COMPLETE => Ok(Self::TxComplete(TxComplete::decode(cursor)?)),
@@ -553,6 +562,49 @@ mod tests {
         assert_eq!(decoded, Message::OpenChannel2(open));
     }
 
+    /// Valid `AcceptChannel2` message for testing.
+    fn sample_accept_channel2(tlvs: Option<AcceptChannel2Tlvs>) -> AcceptChannel2 {
+        let secp = Secp256k1::new();
+        let secrets: [[u8; 32]; 7] = [
+            [0x11; 32], [0x22; 32], [0x33; 32], [0x44; 32], [0x55; 32], [0x66; 32], [0x77; 32],
+        ];
+        let keys: Vec<PublicKey> = secrets
+            .iter()
+            .map(|s| {
+                let sk = SecretKey::from_byte_array(*s).expect("valid secret");
+                PublicKey::from_secret_key(&secp, &sk)
+            })
+            .collect();
+
+        AcceptChannel2 {
+            temporary_channel_id: ChannelId::new([0xbb; CHANNEL_ID_SIZE]),
+            funding_satoshis: 50_000,
+            dust_limit_satoshis: 546,
+            max_htlc_value_in_flight_msat: 100_000_000,
+            htlc_minimum_msat: 1_000,
+            minimum_depth: 3,
+            to_self_delay: 144,
+            max_accepted_htlcs: 483,
+            funding_pubkey: keys[0],
+            revocation_basepoint: keys[1],
+            payment_basepoint: keys[2],
+            delayed_payment_basepoint: keys[3],
+            htlc_basepoint: keys[4],
+            first_per_commitment_point: keys[5],
+            second_per_commitment_point: keys[6],
+            tlvs: tlvs.unwrap_or_default(),
+        }
+    }
+
+    #[test]
+    fn message_accept_channel2_roundtrip() {
+        let accept2 = sample_accept_channel2(None);
+        let msg = Message::AcceptChannel2(accept2.clone());
+        let encoded = msg.encode();
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, Message::AcceptChannel2(accept2));
+    }
+
     #[test]
     fn message_tx_remove_input_roundtrip() {
         let tx_remove_input = TxRemoveInput {
@@ -648,6 +700,10 @@ mod tests {
         assert_eq!(
             Message::OpenChannel2(sample_open_channel2()).msg_type(),
             msg_type::OPEN_CHANNEL2
+        );
+        assert_eq!(
+            Message::AcceptChannel2(sample_accept_channel2(None)).msg_type(),
+            msg_type::ACCEPT_CHANNEL2
         );
         assert_eq!(
             Message::TxRemoveInput(TxRemoveInput {
