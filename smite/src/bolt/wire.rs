@@ -2,11 +2,12 @@
 
 use crate::bolt::BoltError;
 use crate::bolt::types::{
-    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, PUBLIC_KEY_SIZE, TXID_SIZE, Txid,
+    BigSize, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, PUBLIC_KEY_SIZE, SHA256_HASH_SIZE,
+    TXID_SIZE, Txid,
 };
 use secp256k1::PublicKey;
 use secp256k1::ecdsa::Signature;
-use secp256k1::hashes::Hash;
+use secp256k1::hashes::{Hash, sha256};
 
 /// A type that can be read from and written to the Lightning wire format.
 pub trait WireFormat: Sized {
@@ -192,6 +193,17 @@ impl WireFormat for Signature {
 
     fn write(&self, out: &mut Vec<u8>) {
         self.serialize_compact().write(out);
+    }
+}
+
+impl WireFormat for sha256::Hash {
+    fn read(data: &mut &[u8]) -> Result<Self, BoltError> {
+        let buf: [u8; SHA256_HASH_SIZE] = WireFormat::read(data)?;
+        Ok(sha256::Hash::from_byte_array(buf))
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        self.to_byte_array().write(out);
     }
 }
 
@@ -862,5 +874,51 @@ mod tests {
         let decoded = Signature::read(&mut cursor).unwrap();
         assert_eq!(decoded, sig);
         assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn sha256_hash_read_truncated() {
+        let mut empty: &[u8] = &[];
+        assert_eq!(
+            sha256::Hash::read(&mut empty),
+            Err(BoltError::Truncated {
+                expected: SHA256_HASH_SIZE,
+                actual: 0
+            })
+        );
+
+        let mut short: &[u8] = &[0xaa; 31]; // One byte short
+        assert_eq!(
+            sha256::Hash::read(&mut short),
+            Err(BoltError::Truncated {
+                expected: SHA256_HASH_SIZE,
+                actual: 31
+            })
+        );
+    }
+
+    #[test]
+    fn sha256_hash_write_roundtrip() {
+        let hash = sha256::Hash::from_byte_array([0xee; SHA256_HASH_SIZE]);
+
+        let mut buf = Vec::new();
+        hash.write(&mut buf);
+        assert_eq!(buf.len(), SHA256_HASH_SIZE);
+
+        let mut cursor: &[u8] = &buf;
+        let decoded = sha256::Hash::read(&mut cursor).unwrap();
+        assert_eq!(decoded, hash);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn sha256_hash_read_advances_cursor() {
+        let mut data: &[u8] = &[0x55; SHA256_HASH_SIZE + 5]; // 5 extra bytes
+        let hash = sha256::Hash::read(&mut data).unwrap();
+        assert_eq!(
+            hash,
+            sha256::Hash::from_byte_array([0x55; SHA256_HASH_SIZE])
+        );
+        assert_eq!(data.len(), 5); // 5 bytes remaining
     }
 }

@@ -11,6 +11,9 @@ pub const CHANNEL_ID_SIZE: usize = 32;
 /// Size of a chain hash (SHA256).
 pub const CHAIN_HASH_SIZE: usize = 32;
 
+/// Size of a SHA256 Hash.
+pub const SHA256_HASH_SIZE: usize = 32;
+
 /// Size of a transaction ID in bytes.
 pub const TXID_SIZE: usize = 32;
 
