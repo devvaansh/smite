@@ -1,4 +1,7 @@
 //! Process management utilities for spawning and controlling subprocesses.
+//!
+//! Wraps [`std::process::Child`] with graceful shutdown support
+//! and automatic cleanup on drop.
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};

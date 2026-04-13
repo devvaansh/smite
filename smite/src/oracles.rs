@@ -1,3 +1,7 @@
+//! Oracle trait for post-scenario invariant checks.
+//!
+//! Oracles evaluate conditions beyond simple crashes.
+
 /// Result of an oracle evaluation
 pub enum OracleResult {
     /// The check passed

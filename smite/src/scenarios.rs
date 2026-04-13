@@ -1,3 +1,11 @@
+//! Scenario trait and the [`smite_run`] entry point.
+//!
+//! A [`Scenario`] defines how fuzz input is turned into protocol
+//! interactions, from raw encrypted bytes to structured IR programs.
+//! [`smite_run`] is the main function for all scenario binaries: it
+//! initializes the runner, creates the scenario, delivers input and
+//! reports results.
+
 use crate::{bolt::BoltError, noise::ConnectionError};
 
 /// `ScenarioResult` describes the outcomes of running a scenario

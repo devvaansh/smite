@@ -1,3 +1,12 @@
+//! Fuzz input delivery for Nyx and local modes.
+//!
+//! The [`Runner`] trait abstracts how fuzz inputs reach a scenario.
+//! [`NyxRunner`] (requires the `nyx` cargo feature) communicates with
+//! the Nyx hypervisor for fast snapshot-based fuzzing.  [`LocalRunner`]
+//! reads input from a file or stdin for crash reproduction.
+//! [`StdRunner`] auto-selects between them based on the `SMITE_NYX`
+//! environment variable.
+
 #[cfg(feature = "nyx")]
 use smite_nyx_sys::{nyx_fail, nyx_get_fuzz_input, nyx_init, nyx_release, nyx_skip};
 
