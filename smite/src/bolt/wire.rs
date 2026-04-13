@@ -166,9 +166,14 @@ impl WireFormat for Vec<u8> {
     }
 
     /// Writes a `[u16:len][len*byte]` variable-length field.
-    #[allow(clippy::cast_possible_truncation)]
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self.len()` exceeds `MAX_MESSAGE_SIZE`.
     fn write(&self, out: &mut Vec<u8>) {
-        (self.len() as u16).write(out);
+        u16::try_from(self.len())
+            .unwrap_or_else(|_| panic!("Vec<u8> length {} exceeds maximum size", self.len()))
+            .write(out);
         out.extend_from_slice(self);
     }
 }
@@ -609,6 +614,14 @@ mod tests {
         let decoded = Vec::<u8>::read(&mut cursor).unwrap();
         assert_eq!(decoded, original);
         assert!(cursor.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "Vec<u8> length 65536 exceeds maximum size")]
+    fn vec_u8_write_u16_overflow() {
+        let oversized = vec![0x00; 0xffff + 1];
+        let mut buf = Vec::new();
+        oversized.write(&mut buf);
     }
 
     // Test vectors from BOLT 1 Appendix A
